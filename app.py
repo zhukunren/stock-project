@@ -57,6 +57,13 @@ from st_aggrid import AgGrid
 import base64
 import time
 
+# ============== 导入 Tushare 并设置 Token ==============
+import tushare as ts
+
+# 设置您的 Tushare Token
+ts.set_token('c5c5700a6f4678a1837ad234f2e9ea2a573a26b914b47fa2dbb38aff')
+pro = ts.pro_api()
+
 ##############################################################################
 #                            设置随机种子
 ##############################################################################
@@ -75,6 +82,115 @@ def set_seed(seed=42):
     torch.use_deterministic_algorithms(True)
 
 set_seed(42)
+
+# ---------- 数据读取与处理函数 ----------
+
+def read_day_from_tushare(symbol_code, symbol_type='stock'):
+    """
+    使用 Tushare API 获取股票或指数的全部日线行情数据。
+    参数:
+    - symbol_code: 股票或指数代码 (如 "000001.SZ" 或 "000300.SH")
+    - symbol_type: 'stock' 或 'index' (不区分大小写)
+    返回:
+    - 包含日期、开高低收、成交量等列的DataFrame
+    """
+    symbol_type = symbol_type.lower()
+    print(f"传递给 read_day_from_tushare 的 symbol_type: {symbol_type} (类型: {type(symbol_type)})")  # 调试输出
+    print(f"尝试通过 Tushare 获取{symbol_type}数据: {symbol_code}")
+    
+    # 添加断言，确保 symbol_type 是 'stock' 或 'index'
+    assert symbol_type in ['stock', 'index'], "symbol_type 必须是 'stock' 或 'index'"
+    
+    try:
+        if symbol_type == 'stock':
+            # 获取股票日线数据
+            df = pro.daily(ts_code=symbol_code, start_date='20000101', end_date='20251231')
+            if df.empty:
+                print("Tushare 返回的股票数据为空。")
+                return pd.DataFrame()
+            
+            # 转换日期格式并排序
+            df['date'] = pd.to_datetime(df['trade_date'], format='%Y%m%d')
+            df = df.sort_values('date')
+            
+            # 重命名和选择需要的列
+            df = df.rename(columns={
+                'open': 'Open',
+                'high': 'High',
+                'low': 'Low',
+                'close': 'Close',
+                'vol': 'Volume',
+                'amount': 'Amount',
+                'trade_date': 'TradeDate'
+            })
+            df.set_index('date', inplace=True)
+            
+            # 选择需要的列
+            required_columns = ['Open', 'High', 'Low', 'Close', 'Volume', 'Amount', 'TradeDate']
+            available_columns = [col for col in required_columns if col in df.columns]
+            df = df[available_columns]
+        
+        elif symbol_type == 'index':
+            # 获取指数日线数据，使用 index_daily 接口
+            df = pro.index_daily(ts_code=symbol_code, start_date='20000101', end_date='20251231')
+            if df.empty:
+                print("Tushare 返回的指数数据为空。")
+                return pd.DataFrame()
+            
+            # 转换日期格式并排序
+            df['date'] = pd.to_datetime(df['trade_date'], format='%Y%m%d')
+            df = df.sort_values('date')
+            
+            # 重命名和选择需要的列
+            df = df.rename(columns={
+                'open': 'Open',
+                'high': 'High',
+                'low': 'Low',
+                'close': 'Close',
+                'vol': 'Volume',
+                'amount': 'Amount',
+                'trade_date': 'TradeDate'
+            })
+            df.set_index('date', inplace=True)
+            
+            # 选择需要的列，处理可能缺失的字段
+            required_columns = ['Open', 'High', 'Low', 'Close', 'Volume', 'Amount', 'TradeDate']
+            available_columns = [col for col in required_columns if col in df.columns]
+            df = df[available_columns]
+        
+        print(f"通过 Tushare 获取了 {len(df)} 条记录。")
+        print(f"数据框的列：{df.columns.tolist()}")
+        print(f"数据框前5行：\n{df.head()}")
+        return df
+    except AssertionError as ae:
+        print(f"断言错误：{ae}")
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"通过 Tushare 获取数据失败：{e}")
+        return pd.DataFrame()
+
+
+def select_time(df, start_time='20230101', end_time='20240910'):
+    """
+    根据指定的时间范围筛选数据。
+    参数:
+    - df: 包含日期索引的DataFrame
+    - start_time: 起始时间 (字符串, 格式 'YYYYMMDD')
+    - end_time: 截止时间 (字符串, 格式 'YYYYMMDD')
+    返回:
+    - 筛选后的DataFrame
+    """
+    print(f"筛选日期范围: {start_time} 至 {end_time}")
+    try:
+        start_time = pd.to_datetime(start_time, format='%Y%m%d')
+        end_time = pd.to_datetime(end_time, format='%Y%m%d')
+    except Exception as e:
+        print(f"日期转换错误：{e}")
+        return pd.DataFrame()
+    df_filtered = df.loc[start_time:end_time]
+    print(f"筛选后数据长度: {len(df_filtered)}")
+    return df_filtered
+
 
 ##############################################################################
 #                       定义全局身份函数替代 lambda
@@ -177,7 +293,7 @@ def get_classifier(classifier_name, num_features=None, window_size=10, class_wei
             raise ValueError("num_features必须为Transformer模型指定")
         return get_transformer_classifier(num_features, window_size, class_weights=class_weight)
     
-    elif classifier_name == '多层感知机':
+    elif classifier_name == '深度学习':
         if num_features is None:
             raise ValueError("num_features必须为MLP模型指定")
         return get_mlp_classifier(num_features, class_weights=class_weight)
@@ -430,24 +546,49 @@ def preprocess_data(data, N, mixture_depth, mark_labels=True, min_features_to_se
     return data, all_features
 
 ##############################################################################
-#                       其他辅助函数
+#                       优化阈值函数
 ##############################################################################
 @st.cache_data
 def optimize_threshold(y_true, y_proba):
+    """
+    优化分类阈值以最大化 F1 分数。
+
+    参数:
+    - y_true: 真实标签
+    - y_proba: 预测概率
+
+    返回:
+    - 最佳阈值
+    """
     best_thresh = 0.5
     best_f1 = -1
-    
+
     for thresh in np.linspace(0, 1, 101):
         y_pred_temp = (y_proba > thresh).astype(int)
         score = f1_score(y_true, y_pred_temp)
         if score > best_f1:
             best_f1 = score
             best_thresh = thresh
-    
+
     return best_thresh
 
+##############################################################################
+#                       创建序列数据函数
+##############################################################################
 @st.cache_data
 def create_sequences(X, y=None, window_size=10):
+    """
+    创建时间序列数据的函数。
+
+    参数:
+    - X: 特征数组
+    - y: 标签数组（可选）
+    - window_size: 窗口大小
+
+    返回:
+    - sequences: 序列数据
+    - labels: 标签（如果提供了 y）
+    """
     sequences = []
     if y is not None:
         labels = []
@@ -468,9 +609,8 @@ def create_sequences(X, y=None, window_size=10):
     return sequences
 
 ##############################################################################
-#                       训练单个标签模型
+#                       训练模型函数
 ##############################################################################
-@st.cache_resource
 def train_model_for_label(
     df, N, label_column, all_features, classifier_name, 
     n_features_selected, window_size=10, oversample_method='SMOTE', class_weight=None
@@ -478,13 +618,9 @@ def train_model_for_label(
     print(f"开始训练 {label_column} 模型...")
     data = df.copy()
     
-    # 准备特征和标签
-    X = data[all_features]
-    y = data[label_column].astype(np.int64)
-
-    # 特征相关性过滤
+    # 特征相关性过滤（可选，根据需要）
     print("开始特征相关性过滤...")
-    corr_matrix = X.corr().abs()
+    corr_matrix = data[all_features].corr().abs()
     upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
     to_drop = [column for column in upper.columns if any(upper[column] > 0.95)]
     if to_drop:
@@ -512,9 +648,10 @@ def train_model_for_label(
     if sampler is not None:
         if classifier_name == 'Transformer':
             print("为 Transformer 创建序列数据...")
-            X_seq, y_seq = create_sequences(X_scaled, y, window_size=window_size)
+            X_seq, y_seq = create_sequences(X_scaled, data[label_column].astype(np.int64), window_size=window_size)
             print(f"序列数据形状: X={X_seq.shape}, y={y_seq.shape}")
             
+            # 重塑数据以适应 SMOTE
             X_reshaped = X_seq.reshape(X_seq.shape[0], -1)
             print("对序列数据进行过采样处理...")
             X_resampled, y_resampled = sampler.fit_resample(X_reshaped, y_seq)
@@ -523,11 +660,11 @@ def train_model_for_label(
             print(f"过采样后数据形状: X={X_resampled.shape}, y={y_resampled.shape}")
         else:
             print("对数据进行过采样处理...")
-            X_resampled, y_resampled = sampler.fit_resample(X_scaled, y)
+            X_resampled, y_resampled = sampler.fit_resample(X_scaled, data[label_column].astype(np.int64))
             print(f"数据形状: X={X_resampled.shape}, y={y_resampled.shape}")
     else:
         print("不进行过采样，使用原始数据。")
-        X_resampled, y_resampled = X_scaled, y
+        X_resampled, y_resampled = X_scaled, data[label_column].astype(np.int64).values
 
     # 计算类别权重
     if oversample_method == '类别权重':
@@ -535,7 +672,7 @@ def train_model_for_label(
         if isinstance(class_weights_array, torch.Tensor):
             class_weights_array = class_weights_array.float()
     else:
-        class_weights_array = None
+        class_weights_array = class_weight
 
     # 划分训练测试集
     X_train, X_test, y_train, y_test = train_test_split(
@@ -552,7 +689,7 @@ def train_model_for_label(
             window_size=window_size,
             class_weights=class_weights_array
         )
-    elif classifier_name == '多层感知机':
+    elif classifier_name == '深度学习':
         clf_name, clf = get_mlp_classifier(
             input_dim=num_features,
             class_weights=class_weights_array
@@ -598,6 +735,8 @@ def train_model_for_label(
         }
         if clf_name == 'transformer':
             param_grid['module__hidden_dim'] = [64]
+    else:
+        param_grid = {}
 
     grid_search = GridSearchCV(
         estimator=clf,
@@ -729,14 +868,14 @@ def train_model(
 ##############################################################################
 #                       平滑验证函数
 ##############################################################################
-def smooth_predictions(prob_series, min_days_between_predictions=20):
+def smooth_predictions(pred_series, min_days_between_predictions=20):
     peaks = []
     last_peak = -min_days_between_predictions
-    for i in range(len(prob_series)):
-        if prob_series[i] > 0.5 and (i - last_peak) >= min_days_between_predictions:
+    for i in range(len(pred_series)):
+        if pred_series[i] == 1 and (i - last_peak) >= min_days_between_predictions:
             peaks.append(i)
             last_peak = i
-    pred = np.zeros(len(prob_series))
+    pred = np.zeros(len(pred_series))
     pred[peaks] = 1
     return pred
 
@@ -777,7 +916,7 @@ def predict_new_data(new_df,
     if isinstance(_peak_model, NeuralNetClassifier) and \
        isinstance(_peak_model.module_, TransformerClassifier):
         print("创建Peak序列数据...")
-        X_new_seq_peak = create_sequences(X_new_peak_scaled, window_size=10)  # 固定为10
+        X_new_seq_peak = create_sequences(X_new_peak_scaled, y=None, window_size=10)  # 固定为10
         print(f"Peak序列数据形状: {X_new_seq_peak.shape}")
 
         batch_size = 64
@@ -833,7 +972,7 @@ def predict_new_data(new_df,
     if isinstance(_trough_model, NeuralNetClassifier) and \
        isinstance(_trough_model.module_, TransformerClassifier):
         print("创建Trough序列数据...")
-        X_new_seq_trough = create_sequences(X_new_trough_scaled, window_size=10)  # 固定为10
+        X_new_seq_trough = create_sequences(X_new_trough_scaled, y=None, window_size=10)  # 固定为10
         print(f"Trough序列数据形状: {X_new_seq_trough.shape}")
 
         batch_size = 64
@@ -887,12 +1026,12 @@ def predict_new_data(new_df,
 ##############################################################################
 #                       绘图函数（使用Plotly）
 ##############################################################################
-def plot_candlestick_plotly(data, stock_code, start_date, end_date, peaks=None, troughs=None, prediction=False, selected_classifiers=None):
+def plot_candlestick_plotly(data, symbol_code, start_date, end_date, peaks=None, troughs=None, prediction=False, selected_classifiers=None):
     if prediction and selected_classifiers:
         classifiers_str = ", ".join(selected_classifiers)
-        title = f"{stock_code} {start_date} 至 {end_date} 基础模型: {classifiers_str}"
+        title = f"{symbol_code} {start_date} 至 {end_date} 基础模型: {classifiers_str}"
     else:
-        title = f"{stock_code} {start_date} 至 {end_date}"
+        title = f"{symbol_code} {start_date} 至 {end_date}"
 
     if not isinstance(data.index, pd.DatetimeIndex):
         try:
@@ -931,7 +1070,7 @@ def plot_candlestick_plotly(data, stock_code, start_date, end_date, peaks=None, 
         high=data['High'],
         low=data['Low'],
         close=data['Close'],
-        name=stock_code,
+        name=symbol_code,
         increasing=dict(line=dict(color='red')),
         decreasing=dict(line=dict(color='green')),
         hoverinfo='x+y+text',
@@ -1029,30 +1168,45 @@ def main():
     elif menu == "🔍 模型验证":
         predict_section()
 
+##############################################################################
+#                       训练部分函数
+##############################################################################
 def train_section():
     st.header("模型训练流程")
     st.markdown("""
     **机器学习主要步骤：**  
     1. **数据标注**：标注高低点，作为训练目标。  
-    2. **选择基础模型**：推荐使用多层感知机和梯度提升。  
+    2. **选择基础模型**：推荐使用深度学习和梯度提升。  
     3. **均衡类别**：训练时高低点与非高低点数量需接近1：1，需过采样或提高高低点权重。  
     4. **特征选择**：特征即指标，内置32个，混合后将生成更多指标。按与行情相关程度由高到底排序，可手动选择数量。
     """)
 
     with st.expander("🛠️ 数据与参数设置", expanded=True):
         with st.form("train_form"):
-            data_folder = st.text_input(
-                "1️⃣ 通达信安装目录（读取行情数据）", 
-                value="C:/TDX", 
-                help="输入通达信的安装路径，以便读取股票数据。"
+            # ========== 修改部分开始 ==========
+            symbol_type_display = st.radio(
+                "1️⃣ 代码类型",
+                options=["股票", "指数"],
+                index=1,  # 默认选择“指数”
+                help="选择输入的是股票代码还是指数代码。"
             )
-            
-            stock_code = st.text_input(
-                "2️⃣ 股票代码", 
-                value="000001.SH", 
-                help="例如：000001.SH"
+
+            # 将中文选择转换为英文
+            symbol_type = 'stock' if symbol_type_display == "股票" else 'index'
+
+            # 动态设置默认 symbol_code
+            if symbol_type == "stock":
+                default_symbol_code = "000001.SZ"
+            else:
+                default_symbol_code = "000001.SH"
+
+            symbol_code = st.text_input(
+                "2️⃣ 股票或指数代码", 
+                value=default_symbol_code, 
+                help="请输入股票代码（如 000001.SZ）或指数代码（如 000300.SH）。"
             )
-            
+            # ========== 修改部分结束 ==========
+
             # 训练集日期
             st.markdown("📅 **训练集日期**")
             col_train_date1, col_train_date2 = st.columns(2)
@@ -1080,7 +1234,7 @@ def train_section():
             )
 
             # 选择基础模型
-            available_classifiers = ['随机森林', '支持向量机', '逻辑回归', '梯度提升', 'Transformer', '多层感知机']
+            available_classifiers = ['随机森林', '支持向量机', '逻辑回归', '梯度提升', 'Transformer', '深度学习']
             classifier_name = st.selectbox(
                 "4️⃣ 选择基础模型", 
                 available_classifiers, 
@@ -1128,8 +1282,8 @@ def train_section():
         
         if submit_train:
             st.session_state['train_params'] = {
-                'data_folder': data_folder,
-                'stock_code': stock_code,
+                'symbol_type': symbol_type,  # 使用英文的 'stock' 或 'index'
+                'symbol_code': symbol_code,
                 'start_date': start_date,
                 'end_date': end_date,
                 'N': N,
@@ -1140,17 +1294,47 @@ def train_section():
             }
             st.success("参数已提交，请点击下方『训练模型』按钮开始训练。")
 
+            # ========== 获取并显示名称 ==========
+            try:
+                if symbol_type == "stock":
+                    stock_info = pro.stock_basic(ts_code=symbol_code, fields='ts_code,name')
+                    if not stock_info.empty:
+                        stock_name = stock_info.iloc[0]['name']
+                        st.markdown(f"**股票名称：** {stock_name}")
+                    else:
+                        st.warning("无法获取股票名称，请检查股票代码。")
+                else:
+                    index_info = pro.index_basic(ts_code=symbol_code, fields='ts_code,name')
+                    if not index_info.empty:
+                        index_name = index_info.iloc[0]['name']
+                        st.markdown(f"**指数名称：** {index_name}")
+                    else:
+                        st.warning("无法获取指数名称，请检查指数代码。")
+            except Exception as e:
+                st.error(f"获取名称失败：{e}")
+
+            # ========== 调试输出：尝试获取数据并显示 ==========
+            try:
+                #st.write("正在尝试获取数据...")
+                data = read_day_from_tushare(symbol_code, symbol_type=symbol_type)
+                st.write(f"获取到的数据行数: {len(data)}")
+                st.write(f"数据预处理完成，请点击按钮开始训练")
+                if data.empty:
+                    st.warning("获取的数据为空，请检查代码类型和代码是否正确。")
+            except Exception as e:
+                st.error(f"获取数据时发生错误：{e}")
+
     st.markdown("---")
     st.subheader("🚀 开始训练")
     st.markdown("请点击下方按钮开始训练模型。")
     
     if st.button("训练模型"):
-        if 'train_params' not in st.session_state:
+        if 'train_params' not in st.session_state or not st.session_state['train_params']:
             st.error("请在上方提交训练参数。")
         else:
             params = st.session_state['train_params']
-            data_folder = params['data_folder']
-            stock_code = params['stock_code']
+            symbol_type = params['symbol_type']
+            symbol_code = params['symbol_code']
             start_date = params['start_date']
             end_date = params['end_date']
             N = params['N']
@@ -1160,7 +1344,7 @@ def train_section():
             n_features_selected = params['n_features_selected']
 
             # 参数验证
-            if not all([data_folder, stock_code, N, mixture_depth, classifier_name]):
+            if not all([symbol_code, N, mixture_depth, classifier_name]):
                 st.error("请填写所有训练参数。")
             elif start_date > end_date:
                 st.error("开始日期不能晚于结束日期。")
@@ -1168,16 +1352,15 @@ def train_section():
                 with st.spinner("正在读取数据并进行预处理..."):
                     try:
                         # 读取数据
-                        stock_code_tdx = stock_code[-2:].lower() + stock_code[:6]
-                        data = read_day_fromtdx(data_folder, stock_code_tdx)
+                        data = read_day_from_tushare(symbol_code, symbol_type=symbol_type)
                         if data.empty:
-                            st.error("读取的数据为空，请检查文件路径和股票代码。")
+                            st.error("通过 Tushare 获取的数据为空，请检查代码类型和代码。")
                             st.stop()
                         
                         # 根据日期范围截取数据
                         df = select_time(data, start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d"))
                         if df.empty:
-                            st.error("训练集为空，请检查日期范围和数据文件。")
+                            st.error("训练集为空，请检查日期范围和代码。")
                             st.stop()
                         
                         # 预处理数据
@@ -1186,17 +1369,31 @@ def train_section():
                         )
                         
                         st.success("数据预处理完成")
+                        
+                        # ========== 显示筛选后的数据行数和特征数量 ==========
+                        num_rows = len(df_preprocessed)
+                        num_features = len(all_features)
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"**筛选后的数据行数：** {num_rows}")
+                        with col2:
+                            st.write(f"**特征数量：** {num_features}")
+                        
+                    except AssertionError as ae:
+                        st.error(f"数据处理断言失败：{ae}")
+                        st.stop()
                     except Exception as e:
                         st.error(f"数据处理失败：{e}")
                         st.stop()
-                
+
                 # ========== 显示标注好的图表 ==========
                 st.subheader("📊 预处理后的标注图表")
                 try:
                     peaks = df_preprocessed[df_preprocessed['Peak'] == 1] if 'Peak' in df_preprocessed.columns else pd.DataFrame()
                     troughs = df_preprocessed[df_preprocessed['Trough'] == 1] if 'Trough' in df_preprocessed.columns else pd.DataFrame()
+                    symbol_display = symbol_code
                     fig_initial = plot_candlestick_plotly(
-                        df_preprocessed, stock_code, start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d"),
+                        df_preprocessed, symbol_display, start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d"),
                         peaks=peaks, troughs=troughs, prediction=False, selected_classifiers=None
                     )
                     st.plotly_chart(fig_initial, use_container_width=True)
@@ -1275,6 +1472,11 @@ def train_section():
                     st.error(f"缓存模型失败：{e}")
                     st.stop()
 
+
+
+##############################################################################
+#                       验证部分函数
+##############################################################################
 def predict_section():
     st.header("模型验证流程")
     st.markdown("""
@@ -1306,17 +1508,9 @@ def predict_section():
 
             # 其他验证参数
             st.markdown("⚙️ **其他验证参数**")
-            # 取消窗口大小设置，固定为10
-            # window_size_pred = st.number_input(
-            #     "窗口大小", 
-            #     min_value=1, 
-            #     max_value=100, 
-            #     value=10, 
-            #     help="用于创建序列数据的窗口大小。"
-            # )
             # 添加最小验证间隔天数
             min_days_between_predictions = st.number_input(
-                "7️⃣ 最小验证间隔天数", 
+                "7️⃣ 最小验证间隔天数",  # 修改编号
                 min_value=1,
                 max_value=365,
                 value=20,
@@ -1341,7 +1535,8 @@ def predict_section():
         if not all([
             'peak_model' in st.session_state, 
             'trough_model' in st.session_state,
-            'predict_params' in st.session_state
+            'predict_params' in st.session_state,
+            'train_params' in st.session_state  # 确保训练参数存在以获取代码类型
         ]):
             st.error("请先在左侧『模型训练』部分完成模型训练后再进行验证。")
         else:
@@ -1356,19 +1551,25 @@ def predict_section():
             else:
                 with st.spinner("正在读取验证数据并进行预处理..."):
                     try:
+                        # 获取训练参数以获取 symbol_type 和 symbol_code
+                        train_params = st.session_state['train_params']
+                        symbol_type = train_params['symbol_type']
+                        symbol_code = train_params['symbol_code']
+
+                        # 显示当前使用的 symbol_type 和 symbol_code 以确认
+                        st.markdown(f"**使用的代码类型：** {'股票' if symbol_type == 'stock' else '指数'}")
+                        st.markdown(f"**使用的代码：** {symbol_code}")
+
                         # 读取数据
-                        stock_code = st.session_state['train_params']['stock_code']
-                        data_folder = st.session_state['train_params']['data_folder']
-                        stock_code_tdx = stock_code[-2:].lower() + stock_code[:6]
-                        data = read_day_fromtdx(data_folder, stock_code_tdx)
+                        data = read_day_from_tushare(symbol_code, symbol_type=symbol_type)
                         if data.empty:
-                            st.error("读取的数据为空，请检查文件路径和股票代码。")
+                            st.error("通过 Tushare 获取的数据为空，请检查代码类型和代码。")
                             st.stop()
                         
                         # 截取验证区间
                         new_df = select_time(data, start_new_date.strftime("%Y%m%d"), end_new_date.strftime("%Y%m%d"))
                         if new_df.empty:
-                            st.error("验证集为空，请检查日期范围和数据文件。")
+                            st.error("验证集为空，请检查日期范围和代码。")
                             st.stop()
                         
                         # 调用验证
@@ -1395,9 +1596,9 @@ def predict_section():
                         st.subheader("📊 验证结果可视化")
                         peaks_pred = result[result['Peak_Prediction'] == 1]
                         troughs_pred = result[result['Trough_Prediction'] == 1]
+                        symbol_display = symbol_code
                         fig_pred = plot_candlestick_plotly(
-                            result, st.session_state['train_params']['stock_code'], 
-                            start_new_date.strftime("%Y%m%d"), end_new_date.strftime("%Y%m%d"),
+                            result, symbol_display, start_new_date.strftime("%Y%m%d"), end_new_date.strftime("%Y%m%d"),
                             peaks=peaks_pred, troughs=troughs_pred, prediction=True, 
                             selected_classifiers=[st.session_state['train_params']['classifier_name']]
                         )
@@ -1429,6 +1630,9 @@ def predict_section():
                             # 添加下载按钮
                             st.markdown(download_link(result_table, 'validation_results.csv', '📥 下载验证结果'), unsafe_allow_html=True)
                         
+                    except AssertionError as ae:
+                        st.error(f"验证数据处理断言失败：{ae}")
+                        st.stop()
                     except Exception as e:
                         st.error(f"验证失败：{e}")
                         st.stop()
