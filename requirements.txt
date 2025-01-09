@@ -13,7 +13,7 @@ bottle==0.13.2
 bs4==0.0.2
 cachetools==5.5.0
 catboost==1.2.7
-cefpython3==66.1
+#cefpython3==66.1
 certifi==2024.2.2
 cffi==1.17.1
 charset-normalizer==3.3.2
