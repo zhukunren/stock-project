@@ -291,12 +291,19 @@ def get_classifier(classifier_name, num_features=None, window_size=10, class_wei
     elif classifier_name == 'Transformer':
         if num_features is None:
             raise ValueError("num_features必须为Transformer模型指定")
-        return get_transformer_classifier(num_features, window_size, class_weights=class_weight)
+        return get_transformer_classifier(
+            num_features=num_features,
+            window_size=window_size,
+            class_weights=class_weight
+        )
     
     elif classifier_name == '深度学习':
         if num_features is None:
             raise ValueError("num_features必须为MLP模型指定")
-        return get_mlp_classifier(num_features, class_weights=class_weight)
+        return get_mlp_classifier(
+            input_dim=num_features,
+            class_weights=class_weight
+        )
     
     else:
         raise ValueError(f"未知的分类器名称: {classifier_name}")
@@ -305,7 +312,7 @@ def get_classifier(classifier_name, num_features=None, window_size=10, class_wei
 #                       数据预处理函数
 ##############################################################################
 @st.cache_data
-def preprocess_data(data, N, mixture_depth, mark_labels=True, min_features_to_select=10, max_features_for_mixture=50):
+def preprocess_data(data, N, mixture_depth, mark_labels=True):
     """
     完整保留您原本的 preprocess_data 逻辑，不再省略。
     """
@@ -498,6 +505,7 @@ def preprocess_data(data, N, mixture_depth, mark_labels=True, min_features_to_se
             # 对本轮新特征进行方差和相关性过滤
             if new_features:
                 X_new = data[new_features].fillna(0)
+                # 方差过滤
                 selector = VarianceThreshold(threshold=0.0001)
                 selector.fit(X_new)
                 new_features = [nf for nf, s in zip(new_features, selector.get_support()) if s]
@@ -660,7 +668,7 @@ def train_model_for_label(
             print(f"过采样后数据形状: X={X_resampled.shape}, y={y_resampled.shape}")
         else:
             print("对数据进行过采样处理...")
-            X_resampled, y_resampled = sampler.fit_resample(X_scaled, data[label_column].astype(np.int64))
+            X_resampled, y_resampled = sampler.fit_resample(X_scaled, data[label_column].astype(np.int64).values)
             print(f"数据形状: X={X_resampled.shape}, y={y_resampled.shape}")
     else:
         print("不进行过采样，使用原始数据。")
@@ -762,21 +770,21 @@ def train_model_for_label(
     feature_selector = None
     selected_features = all_features_filtered.copy()
 
-    if clf_name in ['rf', 'gb'] and n_features_selected != 'auto':
+    # 修改：将特征选择应用于更多分类器
+    applicable_classifiers = ['rf', 'gb', 'svc', 'lr']  # 支持特征选择的分类器
+    if clf_name in applicable_classifiers and n_features_selected != 'auto':
         feature_selector = RFE(
             estimator=best_estimator,
             n_features_to_select=int(n_features_selected),
             step=1
         )
-        # transformer 不同结构无需 RFE
-        if not clf_name == 'transformer':
-            feature_selector.fit(X_train, y_train)
-            selected_features = [
-                all_features_filtered[i] 
-                for i in range(len(all_features_filtered)) 
-                if feature_selector.support_[i]
-            ]
-            print(f"RFE选择的特征数量：{len(selected_features)}")
+        feature_selector.fit(X_train, y_train)
+        selected_features = [
+            all_features_filtered[i] 
+            for i in range(len(all_features_filtered)) 
+            if feature_selector.support_[i]
+        ]
+        print(f"RFE选择的特征数量：{len(selected_features)}")
     else:
         print(f"{clf_name} 不进行特征选择，使用全部特征")
         feature_selector = FunctionTransformer(func=identity, validate=False)
@@ -916,7 +924,7 @@ def predict_new_data(new_df,
     if isinstance(_peak_model, NeuralNetClassifier) and \
        isinstance(_peak_model.module_, TransformerClassifier):
         print("创建Peak序列数据...")
-        X_new_seq_peak = create_sequences(X_new_peak_scaled, y=None, window_size=10)  # 固定为10
+        X_new_seq_peak = create_sequences(X_new_peak_scaled, y=None, window_size=10)
         print(f"Peak序列数据形状: {X_new_seq_peak.shape}")
 
         batch_size = 64
@@ -972,7 +980,7 @@ def predict_new_data(new_df,
     if isinstance(_trough_model, NeuralNetClassifier) and \
        isinstance(_trough_model.module_, TransformerClassifier):
         print("创建Trough序列数据...")
-        X_new_seq_trough = create_sequences(X_new_trough_scaled, y=None, window_size=10)  # 固定为10
+        X_new_seq_trough = create_sequences(X_new_trough_scaled, y=None, window_size=10)
         print(f"Trough序列数据形状: {X_new_seq_trough.shape}")
 
         batch_size = 64
@@ -1182,147 +1190,155 @@ def train_section():
     """)
 
     with st.expander("🛠️ 数据与参数设置", expanded=True):
-        with st.form("train_form"):
-            # ========== 修改部分开始 ==========
-            symbol_type_display = st.radio(
-                "1️⃣ 代码类型",
-                options=["股票", "指数"],
-                index=1,  # 默认选择“指数”
-                help="选择输入的是股票代码还是指数代码。"
+        # ========== 修改部分开始 ==========
+        st.markdown("**1️⃣ 代码类型和代码**")
+        symbol_type_display = st.radio(
+            "代码类型",
+            options=["股票", "指数"],
+            index=1,  # 默认选择“指数”
+            help="选择输入的是股票代码还是指数代码。"
+        )
+
+        # 将中文选择转换为英文
+        symbol_type = 'stock' if symbol_type_display == "股票" else 'index'
+
+        # 动态设置默认 symbol_code
+        if symbol_type == "stock":
+            default_symbol_code = "000001.SZ"
+        else:
+            default_symbol_code = "000001.SH"
+
+        symbol_code = st.text_input(
+            "股票或指数代码", 
+            value=default_symbol_code, 
+            help="请输入股票代码（如 000001.SZ）或指数代码（如 000300.SH）。"
+        )
+        # ========== 修改部分结束 ==========
+
+        # 训练集日期
+        st.markdown("**2️⃣ 训练集日期**")
+        col_train_date1, col_train_date2 = st.columns(2)
+        with col_train_date1:
+            start_date = st.date_input(
+                "训练开始日期", 
+                datetime.strptime("2000-01-01", "%Y-%m-%d"), 
+                key='train_start_date',
+                help="选择训练数据的开始日期。"
+            )
+        with col_train_date2:
+            end_date = st.date_input(
+                "训练结束日期", 
+                datetime.strptime("2020-12-31", "%Y-%m-%d"), 
+                key='train_end_date',
+                help="选择训练数据的结束日期。"
             )
 
-            # 将中文选择转换为英文
-            symbol_type = 'stock' if symbol_type_display == "股票" else 'index'
+        N = st.number_input(
+            "**3️⃣ 标注高低点间的最小间隔 (N)**", 
+            min_value=1, 
+            max_value=1000000, 
+            value=30, 
+            help="用于数据预处理的窗口长度，决定如何标注高低点。"
+        )
 
-            # 动态设置默认 symbol_code
-            if symbol_type == "stock":
-                default_symbol_code = "000001.SZ"
-            else:
-                default_symbol_code = "000001.SH"
+        # 选择基础模型
+        st.markdown("**4️⃣ 选择基础模型**")
+        available_classifiers = ['随机森林', '支持向量机', '逻辑回归', '梯度提升', 'Transformer', '深度学习']
+        classifier_name = st.selectbox(
+            "选择基础模型", 
+            available_classifiers, 
+            help="选择用于训练的分类器模型。"
+        )
 
-            symbol_code = st.text_input(
-                "2️⃣ 股票或指数代码", 
-                value=default_symbol_code, 
-                help="请输入股票代码（如 000001.SZ）或指数代码（如 000300.SH）。"
-            )
-            # ========== 修改部分结束 ==========
+        # 因子混合深度
+        st.markdown("**5️⃣ 因子混合深度**")
+        mixture_depth = st.slider(
+            "选择因子混合的深度", 
+            min_value=1, 
+            max_value=3, 
+            value=1, 
+            help="选择因子混合的深度。"
+        )
 
-            # 训练集日期
-            st.markdown("📅 **训练集日期**")
-            col_train_date1, col_train_date2 = st.columns(2)
-            with col_train_date1:
-                start_date = st.date_input(
-                    "训练开始日期", 
-                    datetime.strptime("2000-01-01", "%Y-%m-%d"), 
-                    key='train_start_date',
-                    help="选择训练数据的开始日期。"
-                )
-            with col_train_date2:
-                end_date = st.date_input(
-                    "训练结束日期", 
-                    datetime.strptime("2020-12-31", "%Y-%m-%d"), 
-                    key='train_end_date',
-                    help="选择训练数据的结束日期。"
-                )
+        # 过采样方法选择
+        st.markdown("**6️⃣ 处理类别不均衡的方法**")
+        oversample_methods = [
+            '过采样',
+            '类别权重'
+        ]
+        oversample_method = st.selectbox(
+            "选择处理类别不均衡的方法", 
+            oversample_methods, 
+            help="选择用于处理类别不均衡的方法。"
+        )
 
-            N = st.number_input(
-                "3️⃣ 标注高低点间的最小间隔 (N)", 
-                min_value=1, 
-                max_value=1000000, 
-                value=30, 
-                help="用于数据预处理的窗口长度，决定如何标注高低点。"
-            )
-
-            # 选择基础模型
-            available_classifiers = ['随机森林', '支持向量机', '逻辑回归', '梯度提升', 'Transformer', '深度学习']
-            classifier_name = st.selectbox(
-                "4️⃣ 选择基础模型", 
-                available_classifiers, 
-                help="选择用于训练的分类器模型。"
-            )
-
-            # 因子混合深度
-            mixture_depth = st.slider(
-                "5️⃣ 因子混合深度", 
-                min_value=1, 
-                max_value=3, 
-                value=1, 
-                help="选择因子混合的深度。"
-            )
-
-            # 过采样方法选择
-            oversample_methods = [
-                '过采样',
-                '类别权重'
-            ]
-            oversample_method = st.selectbox(
-                "6️⃣ 处理类别不均衡的方法", 
-                oversample_methods, 
-                help="选择用于处理类别不均衡的方法。"
+        # 特征选择
+        st.markdown("**🔍 特征选择**")
+        st.markdown("""
+        **注意**：要手动输入特征数量，请取消勾选“自动选择特征数量”复选框。
+        """)
+        auto_feature = st.checkbox(
+            "自动选择特征数量（仅对随机森林、梯度提升、支持向量机、逻辑回归有效）",  # 修改：更新说明
+            value=True,
+            help="勾选后将自动选择特征数量。取消勾选后，可以手动输入特征数量。"
+        )
+        if auto_feature:
+            n_features_selected = 'auto'
+        else:
+            n_features_selected = st.number_input(
+                "选择特征数量",
+                min_value=1,
+                max_value=1000,
+                value=20,
+                help="手动选择特征的数量。仅在取消勾选自动选择后可见。"
             )
 
-            # 特征选择
-            st.markdown("🔍 **特征选择**")
-            auto_feature = st.checkbox(
-                "自动选择特征数量", 
-                value=True
-            )
-            if auto_feature:
-                n_features_selected = 'auto'
-            else:
-                n_features_selected = st.number_input(
-                    "选择特征数量", 
-                    min_value=1, 
-                    max_value=1000, 
-                    value=20, 
-                    help="手动选择特征的数量。"
-                )
-
-            submit_train = st.form_submit_button("提交参数")
+        # 提交参数按钮
+        submit_train = st.button("提交参数")
         
-        if submit_train:
-            st.session_state['train_params'] = {
-                'symbol_type': symbol_type,  # 使用英文的 'stock' 或 'index'
-                'symbol_code': symbol_code,
-                'start_date': start_date,
-                'end_date': end_date,
-                'N': N,
-                'classifier_name': classifier_name,
-                'mixture_depth': mixture_depth,
-                'oversample_method': oversample_method,
-                'n_features_selected': n_features_selected
-            }
-            st.success("参数已提交，请点击下方『训练模型』按钮开始训练。")
+    if submit_train:
+        st.session_state['train_params'] = {
+            'symbol_type': symbol_type,  # 使用英文的 'stock' 或 'index'
+            'symbol_code': symbol_code,
+            'start_date': start_date,
+            'end_date': end_date,
+            'N': N,
+            'classifier_name': classifier_name,
+            'mixture_depth': mixture_depth,
+            'oversample_method': oversample_method,
+            'n_features_selected': n_features_selected
+        }
+        st.success("参数已提交，请点击下方『训练模型』按钮开始训练。")
 
-            # ========== 获取并显示名称 ==========
-            try:
-                if symbol_type == "stock":
-                    stock_info = pro.stock_basic(ts_code=symbol_code, fields='ts_code,name')
-                    if not stock_info.empty:
-                        stock_name = stock_info.iloc[0]['name']
-                        st.markdown(f"**股票名称：** {stock_name}")
-                    else:
-                        st.warning("无法获取股票名称，请检查股票代码。")
+        # ========== 获取并显示名称 ==========
+        try:
+            if symbol_type == "stock":
+                stock_info = pro.stock_basic(ts_code=symbol_code, fields='ts_code,name')
+                if not stock_info.empty:
+                    stock_name = stock_info.iloc[0]['name']
+                    st.markdown(f"**股票名称：** {stock_name}")
                 else:
-                    index_info = pro.index_basic(ts_code=symbol_code, fields='ts_code,name')
-                    if not index_info.empty:
-                        index_name = index_info.iloc[0]['name']
-                        st.markdown(f"**指数名称：** {index_name}")
-                    else:
-                        st.warning("无法获取指数名称，请检查指数代码。")
-            except Exception as e:
-                st.error(f"获取名称失败：{e}")
+                    st.warning("无法获取股票名称，请检查股票代码。")
+            else:
+                index_info = pro.index_basic(ts_code=symbol_code, fields='ts_code,name')
+                if not index_info.empty:
+                    index_name = index_info.iloc[0]['name']
+                    st.markdown(f"**指数名称：** {index_name}")
+                else:
+                    st.warning("无法获取指数名称，请检查指数代码。")
+        except Exception as e:
+            st.error(f"获取名称失败：{e}")
 
-            # ========== 调试输出：尝试获取数据并显示 ==========
-            try:
-                #st.write("正在尝试获取数据...")
-                data = read_day_from_tushare(symbol_code, symbol_type=symbol_type)
-                st.write(f"获取到的数据行数: {len(data)}")
-                st.write(f"数据预处理完成，请点击按钮开始训练")
-                if data.empty:
-                    st.warning("获取的数据为空，请检查代码类型和代码是否正确。")
-            except Exception as e:
-                st.error(f"获取数据时发生错误：{e}")
+        # ========== 调试输出：尝试获取数据并显示 ==========
+        try:
+            #st.write("正在尝试获取数据...")
+            data = read_day_from_tushare(symbol_code, symbol_type=symbol_type)
+            st.write(f"获取到的数据行数: {len(data)}")
+            st.write(f"数据预处理完成，请点击按钮开始训练")
+            if data.empty:
+                st.warning("获取的数据为空，请检查代码类型和代码是否正确。")
+        except Exception as e:
+            st.error(f"获取数据时发生错误：{e}")
 
     st.markdown("---")
     st.subheader("🚀 开始训练")
@@ -1472,8 +1488,6 @@ def train_section():
                     st.error(f"缓存模型失败：{e}")
                     st.stop()
 
-
-
 ##############################################################################
 #                       验证部分函数
 ##############################################################################
@@ -1487,45 +1501,45 @@ def predict_section():
     """)
 
     with st.expander("🔧 验证数据设置", expanded=True):
-        with st.form("predict_form"):
-            # 验证区间
-            st.markdown("📅 **验证区间**")
-            col_pred_date1, col_pred_date2 = st.columns(2)
-            with col_pred_date1:
-                start_new_date = st.date_input(
-                    "验证开始日期", 
-                    datetime.strptime("2021-01-01", "%Y-%m-%d"), 
-                    key='pred_start_date',
-                    help="选择验证数据的开始日期。"
-                )
-            with col_pred_date2:
-                end_new_date = st.date_input(
-                    "验证结束日期", 
-                    datetime.today(), 
-                    key='pred_end_date',
-                    help="选择验证数据的结束日期。"
-                )
-
-            # 其他验证参数
-            st.markdown("⚙️ **其他验证参数**")
-            # 添加最小验证间隔天数
-            min_days_between_predictions = st.number_input(
-                "7️⃣ 信号间隔天数",  # 修改编号
-                min_value=1,
-                max_value=365,
-                value=20,
-                help="在指定的天数内不允许重复验证（即相同类别的预测点之间至少相隔多少天）。"
+        # 验证区间
+        st.markdown("**1️⃣ 验证区间**")
+        col_pred_date1, col_pred_date2 = st.columns(2)
+        with col_pred_date1:
+            start_new_date = st.date_input(
+                "验证开始日期", 
+                datetime.strptime("2021-01-01", "%Y-%m-%d"), 
+                key='pred_start_date',
+                help="选择验证数据的开始日期。"
+            )
+        with col_pred_date2:
+            end_new_date = st.date_input(
+                "验证结束日期", 
+                datetime.today(), 
+                key='pred_end_date',
+                help="选择验证数据的结束日期。"
             )
 
-            submit_predict = st.form_submit_button("提交验证参数")
-        
-        if submit_predict:
-            st.session_state['predict_params'] = {
-                'start_new_date': start_new_date,
-                'end_new_date': end_new_date,
-                'min_days_between_predictions': min_days_between_predictions
-            }
-            st.success("验证参数已提交，请点击下方『调用模型进行验证』按钮开始验证。")
+        # 其他验证参数
+        st.markdown("**2️⃣ 其他验证参数**")
+        # 添加最小验证间隔天数
+        min_days_between_predictions = st.number_input(
+            "最小信号间隔天数",  # 修改编号
+            min_value=1,
+            max_value=365,
+            value=20,
+            help="在指定的天数内不允许重复验证（即相同类别的预测点之间至少相隔多少天）。"
+        )
+
+        # 提交验证参数按钮
+        submit_predict = st.button("提交验证参数")
+    
+    if submit_predict:
+        st.session_state['predict_params'] = {
+            'start_new_date': start_new_date,
+            'end_new_date': end_new_date,
+            'min_days_between_predictions': min_days_between_predictions
+        }
+        st.success("验证参数已提交，请点击下方『调用模型进行验证』按钮开始验证。")
 
     st.markdown("---")
     st.subheader("🔄 开始验证")
