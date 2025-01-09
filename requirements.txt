@@ -114,7 +114,7 @@ pydeck==0.9.1
 Pygments==2.19.1
 pyinstaller==6.11.1
 pyinstaller-hooks-contrib==2024.10
-PyMySQL==1.1.1
+#PyMySQL==1.1.1
 pyopencl==2024.2.7
 pyparsing==3.1.4
 PyQt5==5.15.9
