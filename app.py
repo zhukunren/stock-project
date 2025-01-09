@@ -1264,7 +1264,7 @@ def train_section():
             # 特征选择
             st.markdown("🔍 **特征选择**")
             auto_feature = st.checkbox(
-                "自动选择特征数量（仅对随机森林、梯度提升有效）", 
+                "自动选择特征数量", 
                 value=True
             )
             if auto_feature:
