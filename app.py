@@ -1510,7 +1510,7 @@ def predict_section():
             st.markdown("⚙️ **其他验证参数**")
             # 添加最小验证间隔天数
             min_days_between_predictions = st.number_input(
-                "7️⃣ 最小验证间隔天数",  # 修改编号
+                "7️⃣ 信号间隔天数",  # 修改编号
                 min_value=1,
                 max_value=365,
                 value=20,
